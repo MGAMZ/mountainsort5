@@ -13,6 +13,8 @@ from ..core.compute_templates import compute_templates
 from ..core.compute_pca_features import compute_pca_features
 from ..core.Timer import Timer
 
+from neovibe.logger import logger
+
 
 @dataclass
 class SortingSchemeExtraOutput:
@@ -38,11 +40,10 @@ def sorting_scheme1(
 
     ###################################################################
     # Handle multi-segment recordings
-    if recording.get_num_segments() > 1:
-        print('Recording has multiple segments. Joining segments for sorting...')
+    if nrec:=recording.get_num_segments() > 1:
+        logger.debug(f'Recording has {nrec} segments. Joining segments for sorting...')
         recording_joined = si.concatenate_recordings(recording_list=[recording])
         sorting_joined = sorting_scheme1(recording_joined, sorting_parameters=sorting_parameters)
-        print('Splitting sorting into segments to match original multisegment recording...')
         sorting = si.split_sorting(sorting_joined, recording_joined)
         return sorting
     ###################################################################
@@ -53,21 +54,10 @@ def sorting_scheme1(
 
     channel_locations = recording.get_channel_locations()
 
-    print(f'Number of channels: {M}')
-    print(f'Number of timepoints: {N}')
-    print(f'Sampling frequency: {sampling_frequency} Hz')
-    for m in range(M):
-        print(f'Channel {m}: {channel_locations[m]}')
-
     sorting_parameters.check_valid(M=M, N=N, sampling_frequency=sampling_frequency, channel_locations=channel_locations)
 
-    print('Loading traces')
-    tt = Timer('load_traces')
     traces: np.ndarray = recording.get_traces()
-    tt.report()
 
-    print('Detecting spikes')
-    tt = Timer('detect_spikes')
     time_radius = int(math.ceil(sorting_parameters.detect_time_radius_msec / 1000 * sampling_frequency))
     times, channel_indices = detect_spikes(
         traces=traces,
@@ -80,17 +70,11 @@ def sorting_scheme1(
         margin_right=sorting_parameters.snippet_T2,
         verbose=True
     )
-    print(f'Detected {len(times)} spikes')
-    tt.report()
+    logger.debug(f'Detected {len(times)} spikes')
 
-    print('Removing duplicate times')
-    tt = Timer('remove_duplicate_times')
     # this is important because isosplit does not do well with duplicate points
     times, channel_indices = remove_duplicate_times(times, channel_indices)
-    tt.report()
 
-    print(f'Extracting {len(times)} snippets')
-    tt = Timer('extract_snippets')
     snippets = extract_snippets( # L x T x M
         traces=traces,
         channel_locations=channel_locations,
@@ -100,19 +84,12 @@ def sorting_scheme1(
         T1=sorting_parameters.snippet_T1,
         T2=sorting_parameters.snippet_T2
     )
-    tt.report()
     L = snippets.shape[0]
     T = snippets.shape[1]
     assert snippets.shape[2] == M
 
     npca = sorting_parameters.npca_per_channel * M
-    print(f'Computing PCA features with npca={npca}')
-    tt = Timer('compute_pca_features')
     features = compute_pca_features(snippets.reshape((L, T * M)), npca=npca)
-    tt.report()
-
-    print(f'Isosplit6 clustering with npca_per_subdivision={sorting_parameters.npca_per_subdivision}')
-    tt = Timer('isosplit6_subdivision_method')
     labels = isosplit6_subdivision_method(
         X=features,
         npca_per_subdivision=sorting_parameters.npca_per_subdivision
@@ -121,38 +98,17 @@ def sorting_scheme1(
         K = int(np.max(labels))
     else:
         K = 0
-    print(f'Found {K} clusters')
-    tt.report()
 
-    print('Computing templates')
-    tt = Timer('compute_templates')
     templates = compute_templates(snippets=snippets, labels=labels) # K x T x M
     peak_channel_indices = [int(np.argmin(np.min(templates[i], axis=0))) for i in range(K)]
-    tt.report()
 
     if not sorting_parameters.skip_alignment:
-        print('Determining optimal alignment of templates')
-        tt = Timer('align_templates')
         offsets = align_templates(templates)
-        tt.report()
-
-        print('Aligning snippets')
-        tt = Timer('align_snippets')
         snippets = align_snippets(snippets, offsets, labels)
         # this is tricky - we need to subtract the offset to correspond to shifting the template
         times = offset_times(times, -offsets, labels)
-        tt.report()
-
-        print('Clustering aligned snippets')
         npca = sorting_parameters.npca_per_channel * M
-
-        print(f'Computing PCA features with npca={npca}')
-        tt = Timer('compute_pca_features')
         features = compute_pca_features(snippets.reshape((L, T * M)), npca=npca)
-        tt.report()
-
-        print(f'Isosplit6 clustering with npca_per_subdivision={sorting_parameters.npca_per_subdivision}')
-        tt = Timer('isosplit6_subdivision_method')
         labels = isosplit6_subdivision_method(
             X=features,
             npca_per_subdivision=sorting_parameters.npca_per_subdivision
@@ -161,44 +117,27 @@ def sorting_scheme1(
             K = int(np.max(labels))
         else:
             K = 0
-        tt.report()
-        print(f'Found {K} clusters after alignment')
 
-        print('Computing templates')
-        tt = Timer('compute_templates')
         templates = compute_templates(snippets=snippets, labels=labels) # K x T x M
         peak_channel_indices = [int(np.argmin(np.min(templates[i], axis=0))) for i in range(K)]
-        tt.report()
 
-        print('Offsetting times to peak')
-        tt = Timer('determine_offsets_to_peak')
         # Now we need to offset the times again so that the spike times correspond to actual peaks
         offsets_to_peak = determine_offsets_to_peak(templates, detect_sign=sorting_parameters.detect_sign, T1=sorting_parameters.snippet_T1)
-        print('Offsets to peak:', offsets_to_peak)
         # This time we need to add the offset
         times = offset_times(times, offsets_to_peak, labels)
-        tt.report()
 
     # Now we need to make sure the times are in order, because we have offset them
-    print('Sorting times')
-    tt = Timer('sorting times')
     sort_inds = np.argsort(times)
     times = times[sort_inds]
     labels = labels[sort_inds]
-    tt.report()
 
     # also make sure none of the times are out of bounds now that we have offset them a couple times
-    print('Removing out of bounds times')
-    tt = Timer('removing out of bounds times')
     inds_okay = np.where((times >= sorting_parameters.snippet_T1) & (times < N - sorting_parameters.snippet_T2))[0]
     times = times[inds_okay]
     labels = labels[inds_okay]
-    tt.report()
 
-    print('Reordering units')
     # relabel so that units are ordered by channel
     # and we also put any labels that are not used at the end
-    tt = Timer('reordering units')
     aa = np.array([float(x) for x in peak_channel_indices])
     for k in range(1, K + 1):
         inds = np.where(labels == k)[0]
@@ -206,16 +145,14 @@ def sorting_scheme1(
             aa[k - 1] = np.inf
     new_labels_mapping = np.argsort(np.argsort(aa)) + 1 # too tricky! my head aches right now
     labels = new_labels_mapping[labels - 1]
-    tt.report()
 
-    print('Creating sorting object')
-    tt = Timer('creating sorting object')
-       # spikeinterface changed function name in version 0.102.2. They also stopped using the dev tag so parsing with packaging is safer
+    # spikeinterface changed function name in version 0.102.2. They also stopped using the dev tag so parsing with packaging is safer
     if version.parse(si.__version__) < version.parse("0.102.2"):
         sorting = si.NumpySorting.from_times_labels([times], [labels], sampling_frequency=sampling_frequency)
     else:
         sorting = si.NumpySorting.from_samples_and_labels([times], [labels], sampling_frequency=sampling_frequency)
-    tt.report()
+
+    logger.info(f'Final number of spikes: {len(times)}, number of units: {len(np.unique(labels))}')
 
     if return_extra_output:
         extra_output = SortingSchemeExtraOutput(
@@ -268,9 +205,7 @@ def align_templates(templates: npt.NDArray[np.float32]):
                 something_changed = True
                 offsets[k1] = avg_offset
         if not something_changed:
-            print('Template alignment converged.')
             break
-    print('Align templates offsets: ', offsets)
     return offsets
 
 

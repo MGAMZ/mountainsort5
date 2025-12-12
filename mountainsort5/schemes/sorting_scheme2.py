@@ -15,6 +15,8 @@ from ..core.get_sampled_recording_for_training import get_sampled_recording_for_
 from ..core.get_times_labels_from_sorting import get_times_labels_from_sorting
 from ..core.Timer import Timer
 
+from neovibe.logger import logger
+
 
 def sorting_scheme2(
     recording: si.BaseRecording, *,
@@ -40,8 +42,8 @@ def sorting_scheme2(
 
     ###################################################################
     # Handle multi-segment recordings
-    if recording.get_num_segments() > 1:
-        print('Recording has multiple segments. Joining segments for sorting...')
+    if (nrec := recording.get_num_segments()) > 1:
+        logger.debug(f'Recording has {nrec} segments. Joining segments for sorting...')
         recording_joined: si.BaseRecording = si.concatenate_recordings(recording_list=[recording])
         result = sorting_scheme2(
             recording_joined,
@@ -52,7 +54,7 @@ def sorting_scheme2(
         )
         assert isinstance(result, tuple)
         sorting_joined, snippet_classifiers = result
-        print('Splitting sorting into segments to match original multisegment recording...')
+        logger.debug('Splitting sorting into segments to match original multisegment recording.')
         sorting = si.split_sorting(sorting_joined, recording_joined)
         if return_snippet_classifiers:
             return sorting, snippet_classifiers
@@ -70,21 +72,18 @@ def sorting_scheme2(
 
     # Subsample the recording for training
     if sorting_parameters.training_duration_sec is not None:
-        print(f'Using training recording of duration {sorting_parameters.training_duration_sec} sec with the sampling mode {sorting_parameters.training_recording_sampling_mode}')
-        tt = Timer('SCHEME2 get_sampled_recording_for_training')
+        logger.debug(f'Using training recording of duration {sorting_parameters.training_duration_sec} sec with the sampling mode {sorting_parameters.training_recording_sampling_mode}')
         training_recording = get_sampled_recording_for_training(
             recording=recording,
             training_duration_sec=sorting_parameters.training_duration_sec,
             mode=sorting_parameters.training_recording_sampling_mode
         )
-        tt.report()
     else:
-        print(f'Using the full recording for training: {recording.get_num_frames() / recording.get_sampling_frequency()} sec')
+        logger.debug(f'Using the full recording for training: {recording.get_num_frames() / recording.get_sampling_frequency()} sec')
         training_recording = recording
 
     # Run the first phase of spike sorting (same as sorting_scheme1)
-    print('Running phase 1 sorting')
-    tt = Timer('SCHEME2 sorting_scheme1')
+    logger.debug('Running phase 1 sorting')
     sorting1 = sorting_scheme1(
         recording=training_recording,
         sorting_parameters=Scheme1SortingParameters(
@@ -100,10 +99,8 @@ def sorting_scheme2(
         )
     )
     assert isinstance(sorting1, si.BaseSorting)
-    tt.report()
 
     # Get the times and labels from the first phase sorting
-    tt = Timer('SCHEME2 get_times_labels_from_sorting')
     times, labels = get_times_labels_from_sorting(sorting1)
     times: np.ndarray = times
     labels: np.ndarray = labels
@@ -112,11 +109,8 @@ def sorting_scheme2(
         labels = labels + label_offset # used in scheme 3
     else:
         K = 0
-    tt.report()
 
-    print('Loading training traces')
     # Load the traces from the training recording
-    tt = Timer('SCHEME2 training_recording.get_traces')
     training_traces: np.ndarray = training_recording.get_traces()
     training_snippets = extract_snippets(
         traces=training_traces,
@@ -127,11 +121,8 @@ def sorting_scheme2(
         T1=sorting_parameters.snippet_T1,
         T2=sorting_parameters.snippet_T2
     )
-    tt.report()
 
-    print('Training classifier')
     # Train the classifier based on the labels obtained from the first phase sorting
-    tt = Timer('SCHEME2 training classifier step 1')
     channel_masks: Dict[int, Union[List[int], None]] = {} # by channel
     for m in range(M):
         if sorting_parameters.snippet_mask_radius is not None:
@@ -156,11 +147,8 @@ def sorting_scheme2(
             T2=sorting_parameters.snippet_T2
         )
         snippet_classifiers[m].add_training_snippets(random_snippets, label=0, offset=0)
-    tt.report()
 
     # Add the snippets from the first phase sorting to the classifier
-    print('Adding snippets from phase 1 sorting')
-    tt = Timer('SCHEME2 adding snippets from phase 1 sorting')
     for k in range(label_offset + 1, label_offset + K + 1):
         inds0 = np.where(labels == k)[0]
         snippets0 = training_snippets[inds0]
@@ -193,12 +181,8 @@ def sorting_scheme2(
                 offset=offset
             )
     training_snippets = None # Free up memory
-
-    print('Fitting models')
-    tt = Timer('SCHEME2 fitting models')
     for m in range(M):
         snippet_classifiers[m].fit()
-    tt.report()
 
     # Now that we have the classifier, we can do the full sorting
     # Iterate over time chunks, detect and classify all spikes, and collect the results
@@ -208,20 +192,14 @@ def sorting_scheme2(
     else:
         chunk_size = int(math.ceil(sorting_parameters.classification_chunk_sec * recording.sampling_frequency))
 
-    print(f'Chunk size: {chunk_size / recording.sampling_frequency} sec')
+    logger.debug(f'Chunk size: {chunk_size / recording.sampling_frequency} sec')
     chunks = get_time_chunks(np.int64(recording.get_num_samples()), chunk_size=np.int32(chunk_size), padding=np.int32(1000))
     times_list: list[npt.NDArray[np.int64]] = []
     labels_list: list[npt.NDArray] = []
     labels_reference_list = [] if reference_snippet_classifiers is not None else None
     for i, chunk in enumerate(chunks):
-        print(f'Time chunk {i + 1} of {len(chunks)}')
-        print('Loading traces')
-        tt = Timer('SCHEME2 loading traces')
         traces_chunk: np.ndarray = recording.get_traces(start_frame=int(chunk.start - chunk.padding_left), end_frame=int(chunk.end + chunk.padding_right))
-        tt.report()
 
-        print('Detecting spikes')
-        tt = Timer('SCHEME2 detecting spikes')
         time_radius = int(math.ceil(sorting_parameters.detect_time_radius_msec / 1000 * sampling_frequency))
         times_chunk, channel_indices_chunk = detect_spikes(
             traces=traces_chunk,
@@ -234,11 +212,8 @@ def sorting_scheme2(
             margin_right=sorting_parameters.snippet_T2,
             verbose=False
         )
-        print(f'Scheme 2 detected {len(times_chunk)} spikes in chunk {i + 1} of {len(chunks)}')
-        tt.report()
+        logger.debug(f'Scheme 2 detected {len(times_chunk)} spikes in chunk {i + 1} of {len(chunks)}')
 
-        print('Extracting and classifying snippets')
-        tt = Timer('SCHEME2 extracting and classifying snippets')
         labels_chunk = np.zeros(len(times_chunk), dtype='int32')
         labels_reference_chunk = np.zeros(len(times_chunk), dtype='int32') if reference_snippet_classifiers is not None else None
         for m in range(M):
@@ -260,10 +235,6 @@ def sorting_scheme2(
                     labels_reference_chunk_m, _ = reference_snippet_classifiers[m].classify_snippets(snippets2)
                     if labels_reference_chunk_m is not None:
                         labels_reference_chunk[inds] = labels_reference_chunk_m
-        tt.report()
-
-        print('Updating events')
-        tt = Timer('SCHEME2 updating events')
 
         # remove events with label 0
         valid_inds = np.where(labels_chunk > 0)[0]
@@ -277,7 +248,6 @@ def sorting_scheme2(
         labels_chunk: npt.NDArray = labels_chunk[sort_inds2]
         labels_reference_chunk = labels_reference_chunk[sort_inds2] if labels_reference_chunk is not None else None
 
-        print('Removing duplicates')
         new_inds = remove_duplicate_events(times_chunk, labels_chunk, tol=time_radius)
         times_chunk: npt.NDArray = times_chunk[new_inds]
         labels_chunk: npt.NDArray = labels_chunk[new_inds]
@@ -298,40 +268,29 @@ def sorting_scheme2(
             assert labels_reference_list is not None
             labels_reference_list.append(labels_reference_chunk)
 
-        tt.report()
-
     # Now concatenate the results
-    print('Concatenating results')
-    tt = Timer('SCHEME2 concatenating results')
+    logger.debug(f'Got {len(labels_list)} chunks of results.')
     times_concat: npt.NDArray[np.int64] = np.concatenate(times_list)
     labels_concat: npt.NDArray = np.concatenate(labels_list)
     labels_reference_concat = np.concatenate(labels_reference_list) if labels_reference_list is not None else None
-    tt.report()
 
-    print('Perorming label mapping')
-    tt = Timer('SCHEME2 label mapping')
     if reference_snippet_classifiers is not None:
         assert labels_reference_concat is not None
         mapping = get_labels_to_reference_labels_mapping(labels_concat, labels_reference_concat, label_offset=label_offset)
-        print('==== mapping =======================')
-        for k1, k2 in mapping.items():
-            print(f'{k1} -> {k2}')
-        print('====================================')
+
         for m in range(M):
             snippet_classifiers[m].apply_label_mapping(mapping)
         for k1, k2 in mapping.items():
             labels_concat[labels_concat == k1] = k2
-    tt.report()
 
     # Now create a new sorting object from the times and labels results
-    print('Creating sorting object')
-    tt = Timer('SCHEME2 creating sorting object')
     # spikeinterface changed function name in version 0.102.2. They also stopped using the dev tag so parsing with packaging is safer
     if version.parse(si.__version__) < version.parse("0.102.2"):
         sorting2 = si.NumpySorting.from_times_labels([times_concat], [labels_concat], sampling_frequency=recording.sampling_frequency)
     else:
         sorting2 = si.NumpySorting.from_samples_and_labels([times_concat], [labels_concat], sampling_frequency=recording.sampling_frequency)
-    tt.report()
+
+    logger.info(f'Final number of spikes: {len(times_concat)}, number of units: {len(np.unique(labels_concat))}')
 
     if return_snippet_classifiers:
         return sorting2, snippet_classifiers
