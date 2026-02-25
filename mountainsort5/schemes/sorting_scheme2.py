@@ -107,8 +107,10 @@ def sorting_scheme2(
     if len(labels) > 0:
         K = np.max(labels) # number of clusters
         labels = labels + label_offset # used in scheme 3
+        logger.debug(f'Phase1 found {K} clusters. Example labels counts: {np.unique(labels, return_counts=True)}')
     else:
         K = 0
+        logger.warning('Phase1 found 0 clusters (K == 0). No non-noise labels will be trained.')
 
     # Load the traces from the training recording
     training_traces: np.ndarray = training_recording.get_traces()
@@ -241,6 +243,7 @@ def sorting_scheme2(
         times_chunk: npt.NDArray = times_chunk[valid_inds]
         labels_chunk: npt.NDArray = labels_chunk[valid_inds]
         labels_reference_chunk = labels_reference_chunk[valid_inds] if labels_reference_chunk is not None else None
+        logger.debug(f'After removing label 0, {len(times_chunk)} spikes remain in chunk {i + 1} of {len(chunks)}')
 
         # now that we offset them we need to re-sort
         sort_inds2 = np.argsort(times_chunk)
@@ -252,13 +255,16 @@ def sorting_scheme2(
         times_chunk: npt.NDArray = times_chunk[new_inds]
         labels_chunk: npt.NDArray = labels_chunk[new_inds]
         labels_reference_chunk = labels_reference_chunk[new_inds] if labels_reference_chunk is not None else None
+        logger.debug(f'After removing duplicates, {len(times_chunk)} spikes remain in chunk {i + 1} of {len(chunks)}')
 
         # remove events in the margins
         valid_inds = np.where((chunk.padding_left <= times_chunk) & (times_chunk < chunk.total_size - chunk.padding_right))[0]
         times_chunk: npt.NDArray = times_chunk[valid_inds]
         labels_chunk: npt.NDArray = labels_chunk[valid_inds]
         labels_reference_chunk = labels_reference_chunk[valid_inds] if labels_reference_chunk is not None else None
+        logger.debug(f'After removing margin events, {len(times_chunk)} spikes remain in chunk {i + 1} of {len(chunks)}')
 
+        logger.debug(f'Chunk {i + 1} of {len(chunks)} done. Collected {len(times_chunk)} spikes.')
         # don't forget to cast to int64 add the chunk start time
         times_list.append(
             times_chunk.astype(np.int64) + chunk.start - chunk.padding_left
