@@ -15,7 +15,7 @@ from ..core.get_sampled_recording_for_training import get_sampled_recording_for_
 from ..core.get_times_labels_from_sorting import get_times_labels_from_sorting
 from ..core.Timer import Timer
 
-from neovibe.logger import logger
+from tiansuo.logger import logger
 
 
 def sorting_scheme2(
