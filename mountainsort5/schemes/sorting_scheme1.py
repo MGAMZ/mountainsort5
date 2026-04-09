@@ -13,7 +13,7 @@ from ..core.compute_templates import compute_templates
 from ..core.compute_pca_features import compute_pca_features
 from ..core.Timer import Timer
 
-from neovibe.logger import logger
+from tiansuo.logger import logger
 
 
 @dataclass
