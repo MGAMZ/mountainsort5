@@ -28,6 +28,7 @@ class Scheme1SortingParameters:
     npca_per_channel: int = 3
     npca_per_subdivision: int = 10
     skip_alignment: Union[bool, None] = None
+    clamp_avg_offset: bool = True
     pairwise_merge_step: bool = False # deprecated
 
     def check_valid(self, *, M: int, N: int, sampling_frequency: float, channel_locations: npt.NDArray[np.float32]):

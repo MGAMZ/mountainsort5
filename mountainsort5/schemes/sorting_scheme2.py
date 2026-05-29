@@ -95,8 +95,9 @@ def sorting_scheme2(
             snippet_T1=sorting_parameters.snippet_T1,
             snippet_T2=sorting_parameters.snippet_T2,
             npca_per_channel=sorting_parameters.phase1_npca_per_channel,
-            npca_per_subdivision=sorting_parameters.phase1_npca_per_subdivision
-        )
+            npca_per_subdivision=sorting_parameters.phase1_npca_per_subdivision,
+            clamp_avg_offset=sorting_parameters.clamp_avg_offset,
+        ),
     )
     assert isinstance(sorting1, si.BaseSorting)
 

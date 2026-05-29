@@ -26,7 +26,7 @@ class SortingSchemeExtraOutput:
 def sorting_scheme1(
     recording: si.BaseRecording, *,
     sorting_parameters: Scheme1SortingParameters,
-    return_extra_output: bool = False
+    return_extra_output: bool = False,
 ):
     """MountainSort 5 sorting scheme 1
 
@@ -103,7 +103,7 @@ def sorting_scheme1(
     peak_channel_indices = [int(np.argmin(np.min(templates[i], axis=0))) for i in range(K)]
 
     if not sorting_parameters.skip_alignment:
-        offsets = align_templates(templates)
+        offsets = align_templates(templates, clamp_avg_offset=sorting_parameters.clamp_avg_offset)
         snippets = align_snippets(snippets, offsets, labels)
         # this is tricky - we need to subtract the offset to correspond to shifting the template
         times = offset_times(times, -offsets, labels)
@@ -174,9 +174,9 @@ def remove_duplicate_times(times: npt.NDArray, labels: npt.NDArray):
     labels2 = labels[inds]
     return times2, labels2
 
-def align_templates(templates: npt.NDArray[np.float32]):
+def align_templates(templates: npt.NDArray[np.float32], clamp_avg_offset: bool = True):
     K = templates.shape[0]
-    # T = templates.shape[1]
+    T = templates.shape[1]
     # M = templates.shape[2]
     offsets = np.zeros((K,), dtype=np.int32)
     pairwise_optimal_offsets = np.zeros((K, K), dtype=np.int32)
@@ -199,6 +199,8 @@ def align_templates(templates: npt.NDArray[np.float32]):
                     total_weight += weight
             if total_weight > 0:
                 avg_offset = int(weighted_sum / total_weight)
+                if clamp_avg_offset:
+                    avg_offset = max(-T, min(T, avg_offset))
             else:
                 avg_offset = 0
             if avg_offset != offsets[k1]:
