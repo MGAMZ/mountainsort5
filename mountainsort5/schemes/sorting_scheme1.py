@@ -174,7 +174,7 @@ def remove_duplicate_times(times: npt.NDArray, labels: npt.NDArray):
     labels2 = labels[inds]
     return times2, labels2
 
-def align_templates(templates: npt.NDArray[np.float32], clamp_avg_offset: bool = True):
+def align_templates(templates: npt.NDArray[np.float32], clamp_avg_offset: bool = False):
     K = templates.shape[0]
     T = templates.shape[1]
     # M = templates.shape[2]
