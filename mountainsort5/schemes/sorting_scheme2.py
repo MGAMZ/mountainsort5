@@ -6,6 +6,7 @@ import math
 import spikeinterface as si
 from .Scheme2SortingParameters import Scheme2SortingParameters
 from .Scheme1SortingParameters import Scheme1SortingParameters
+from .SortingStats import Scheme2SortingStats
 from ..core.detect_spikes import detect_spikes
 from ..core.extract_snippets import extract_snippets, extract_snippets_in_channel_neighborhood
 from .sorting_scheme1 import sorting_scheme1
@@ -23,7 +24,8 @@ def sorting_scheme2(
     sorting_parameters: Scheme2SortingParameters,
     return_snippet_classifiers: bool = False, # used in scheme 3
     reference_snippet_classifiers: Union[Dict[int, SnippetClassifier], None] = None, # used in scheme 3
-    label_offset: int = 0 # used in scheme 3
+    label_offset: int = 0, # used in scheme 3
+    stats: Scheme2SortingStats | None = None,
 ) -> Union[si.BaseSorting, Tuple[si.BaseSorting, Dict[int, SnippetClassifier]]]:
     """MountainSort 5 sorting scheme 2
 
@@ -84,6 +86,7 @@ def sorting_scheme2(
 
     # Run the first phase of spike sorting (same as sorting_scheme1)
     logger.debug('Running phase 1 sorting')
+    phase1_stats = stats.phase1 if stats is not None else None
     sorting1 = sorting_scheme1(
         recording=training_recording,
         sorting_parameters=Scheme1SortingParameters(
@@ -98,8 +101,14 @@ def sorting_scheme2(
             npca_per_subdivision=sorting_parameters.phase1_npca_per_subdivision,
             clamp_avg_offset=sorting_parameters.clamp_avg_offset,
         ),
+        stats=phase1_stats,
     )
     assert isinstance(sorting1, si.BaseSorting)
+
+    if stats is not None:
+        stats.training_duration_actual_sec = (
+            training_recording.get_num_frames() / training_recording.sampling_frequency
+        )
 
     # Get the times and labels from the first phase sorting
     times, labels = get_times_labels_from_sorting(sorting1)
@@ -112,6 +121,9 @@ def sorting_scheme2(
     else:
         K = 0
         logger.warning('Phase1 found 0 clusters (K == 0). No non-noise labels will be trained.')
+
+    if stats is not None:
+        stats.num_training_units = K
 
     # Load the traces from the training recording
     training_traces: np.ndarray = training_recording.get_traces()
@@ -200,6 +212,12 @@ def sorting_scheme2(
     times_list: list[npt.NDArray[np.int64]] = []
     labels_list: list[npt.NDArray] = []
     labels_reference_list = [] if reference_snippet_classifiers is not None else None
+
+    # Phase 2 chunk accumulators for stats
+    _p2_detected: int = 0
+    _p2_after_classification: int = 0
+    _p2_after_dedup: int = 0
+
     for i, chunk in enumerate(chunks):
         traces_chunk: np.ndarray = recording.get_traces(start_frame=int(chunk.start - chunk.padding_left), end_frame=int(chunk.end + chunk.padding_right))
 
@@ -216,6 +234,7 @@ def sorting_scheme2(
             verbose=False
         )
         logger.debug(f'Scheme 2 detected {len(times_chunk)} spikes in chunk {i + 1} of {len(chunks)}')
+        _p2_detected += len(times_chunk)
 
         labels_chunk = np.zeros(len(times_chunk), dtype='int32')
         labels_reference_chunk = np.zeros(len(times_chunk), dtype='int32') if reference_snippet_classifiers is not None else None
@@ -245,6 +264,7 @@ def sorting_scheme2(
         labels_chunk: npt.NDArray = labels_chunk[valid_inds]
         labels_reference_chunk = labels_reference_chunk[valid_inds] if labels_reference_chunk is not None else None
         logger.debug(f'After removing label 0, {len(times_chunk)} spikes remain in chunk {i + 1} of {len(chunks)}')
+        _p2_after_classification += len(times_chunk)
 
         # now that we offset them we need to re-sort
         sort_inds2 = np.argsort(times_chunk)
@@ -257,6 +277,7 @@ def sorting_scheme2(
         labels_chunk: npt.NDArray = labels_chunk[new_inds]
         labels_reference_chunk = labels_reference_chunk[new_inds] if labels_reference_chunk is not None else None
         logger.debug(f'After removing duplicates, {len(times_chunk)} spikes remain in chunk {i + 1} of {len(chunks)}')
+        _p2_after_dedup += len(times_chunk)
 
         # remove events in the margins
         valid_inds = np.where((chunk.padding_left <= times_chunk) & (times_chunk < chunk.total_size - chunk.padding_right))[0]
@@ -277,6 +298,13 @@ def sorting_scheme2(
 
     # Now concatenate the results
     logger.debug(f'Got {len(labels_list)} chunks of results.')
+
+    if stats is not None:
+        stats.num_chunks = len(chunks)
+        stats.num_spikes_detected_phase2 = _p2_detected
+        stats.num_spikes_after_classification = _p2_after_classification
+        stats.num_spikes_after_dedup_phase2 = _p2_after_dedup
+
     times_concat: npt.NDArray[np.int64] = np.concatenate(times_list)
     labels_concat: npt.NDArray = np.concatenate(labels_list)
     labels_reference_concat = np.concatenate(labels_reference_list) if labels_reference_list is not None else None
@@ -297,7 +325,18 @@ def sorting_scheme2(
     else:
         sorting2 = si.NumpySorting.from_samples_and_labels([times_concat], [labels_concat], sampling_frequency=recording.sampling_frequency)
 
-    logger.info(f'Final number of spikes: {len(times_concat)}, number of units: {len(np.unique(labels_concat))}')
+    num_units_final = len(np.unique(labels_concat))
+    logger.info(f'Final number of spikes: {len(times_concat)}, number of units: {num_units_final}')
+
+    if stats is not None:
+        stats.num_spikes_final = len(times_concat)
+        stats.num_units_final = num_units_final
+        # Per-unit spike counts from final labels
+        from collections import Counter
+        label_counts = Counter(int(lbl) for lbl in labels_concat if lbl > 0)
+        stats.unit_spike_counts = [
+            label_counts.get(uid, 0) for uid in range(1, num_units_final + 1)
+        ]
 
     if return_snippet_classifiers:
         return sorting2, snippet_classifiers
