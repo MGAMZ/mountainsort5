@@ -4,6 +4,7 @@ import numpy as np
 import numpy.typing as npt
 import spikeinterface as si
 from .Scheme3SortingParameters import Scheme3SortingParameters
+from .SortingStats import Scheme2SortingStats
 from .sorting_scheme2 import get_time_chunks
 from .sorting_scheme2 import sorting_scheme2
 from ..core.get_block_recording_for_scheme3 import get_block_recording_for_scheme3
@@ -13,7 +14,8 @@ from ..core.get_times_labels_from_sorting import get_times_labels_from_sorting
 
 def sorting_scheme3(
     recording: si.BaseRecording, *,
-    sorting_parameters: Scheme3SortingParameters
+    sorting_parameters: Scheme3SortingParameters,
+    stats: Scheme2SortingStats | None = None,
 ) -> si.BaseSorting:
     """MountainSort 5 sorting scheme 3
 
@@ -60,7 +62,8 @@ def sorting_scheme3(
             sorting_parameters=sorting_parameters.block_sorting_parameters,
             return_snippet_classifiers=True,
             reference_snippet_classifiers=previous_snippet_classifiers,
-            label_offset=last_label_used
+            label_offset=last_label_used,
+            stats=stats,  # stats accumulate across blocks via the same object
         )
         assert isinstance(result, tuple)
         subsorting, snippet_classifiers = result

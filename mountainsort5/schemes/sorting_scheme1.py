@@ -6,6 +6,7 @@ import numpy.typing as npt
 import math
 import spikeinterface as si
 from .Scheme1SortingParameters import Scheme1SortingParameters
+from .SortingStats import Scheme1SortingStats
 from ..core.detect_spikes import detect_spikes
 from ..core.extract_snippets import extract_snippets
 from ..core.isosplit6_subdivision_method import isosplit6_subdivision_method
@@ -26,7 +27,8 @@ class SortingSchemeExtraOutput:
 def sorting_scheme1(
     recording: si.BaseRecording, *,
     sorting_parameters: Scheme1SortingParameters,
-    return_extra_output: bool = False
+    return_extra_output: bool = False,
+    stats: Scheme1SortingStats | None = None,
 ):
     """MountainSort 5 sorting scheme 1
 
@@ -52,6 +54,11 @@ def sorting_scheme1(
     N = recording.get_num_frames()
     sampling_frequency = recording.sampling_frequency
 
+    if stats is not None:
+        stats.num_channels = M
+        stats.num_frames = N
+        stats.sampling_frequency = sampling_frequency
+
     channel_locations = recording.get_channel_locations()
 
     sorting_parameters.check_valid(M=M, N=N, sampling_frequency=sampling_frequency, channel_locations=channel_locations)
@@ -72,8 +79,14 @@ def sorting_scheme1(
     )
     logger.debug(f'Detected {len(times)} spikes')
 
+    if stats is not None:
+        stats.num_spikes_detected = len(times)
+
     # this is important because isosplit does not do well with duplicate points
     times, channel_indices = remove_duplicate_times(times, channel_indices)
+
+    if stats is not None:
+        stats.num_spikes_after_dedup = len(times)
 
     snippets = extract_snippets( # L x T x M
         traces=traces,
@@ -99,11 +112,21 @@ def sorting_scheme1(
     else:
         K = 0
 
+    if stats is not None:
+        stats.num_clusters_before_alignment = K
+
     templates = compute_templates(snippets=snippets, labels=labels) # K x T x M
     peak_channel_indices = [int(np.argmin(np.min(templates[i], axis=0))) for i in range(K)]
 
     if not sorting_parameters.skip_alignment:
-        offsets = align_templates(templates)
+        offsets, n_align_iter = align_templates(templates, clamp_avg_offset=sorting_parameters.clamp_avg_offset)
+
+        if stats is not None:
+            stats.alignment_performed = True
+            stats.alignment_iterations = n_align_iter
+            if K > 0:
+                stats.alignment_offsets_mean = float(np.mean(np.abs(offsets)))
+                stats.alignment_offsets_std = float(np.std(offsets))
         snippets = align_snippets(snippets, offsets, labels)
         # this is tricky - we need to subtract the offset to correspond to shifting the template
         times = offset_times(times, -offsets, labels)
@@ -117,6 +140,9 @@ def sorting_scheme1(
             K = int(np.max(labels))
         else:
             K = 0
+
+        if stats is not None:
+            stats.num_clusters_after_alignment = K
 
         templates = compute_templates(snippets=snippets, labels=labels) # K x T x M
         peak_channel_indices = [int(np.argmin(np.min(templates[i], axis=0))) for i in range(K)]
@@ -132,9 +158,13 @@ def sorting_scheme1(
     labels = labels[sort_inds]
 
     # also make sure none of the times are out of bounds now that we have offset them a couple times
+    n_before_oob = len(times)
     inds_okay = np.where((times >= sorting_parameters.snippet_T1) & (times < N - sorting_parameters.snippet_T2))[0]
     times = times[inds_okay]
     labels = labels[inds_okay]
+
+    if stats is not None:
+        stats.num_spikes_oob_removed = n_before_oob - len(times)
 
     # relabel so that units are ordered by channel
     # and we also put any labels that are not used at the end
@@ -152,7 +182,38 @@ def sorting_scheme1(
     else:
         sorting = si.NumpySorting.from_samples_and_labels([times], [labels], sampling_frequency=sampling_frequency)
 
-    logger.info(f'Final number of spikes: {len(times)}, number of units: {len(np.unique(labels))}')
+    num_units = len(np.unique(labels))
+    logger.info(f'Final number of spikes: {len(times)}, number of units: {num_units}')
+
+    if stats is not None:
+        stats.num_spikes_final = len(times)
+        stats.num_units_final = num_units
+
+        if return_extra_output:
+            # Per-unit metrics: relabeling (L139-147) maps old labels → new labels
+            # via new_labels_mapping.  Build the inverse to align template/
+            # peak_channel data (old-label order) with remapped spike labels.
+            inv_mapping: dict = {}
+            for old_idx, new_lbl in enumerate(new_labels_mapping, start=1):
+                inv_mapping[int(new_lbl)] = old_idx
+
+            for unit_id in range(1, num_units + 1):
+                old_idx = inv_mapping.get(unit_id, unit_id)
+                if 1 <= old_idx <= K:
+                    stats.unit_peak_channels.append(peak_channel_indices[old_idx - 1])
+                    stats.unit_template_amplitudes.append(
+                        float(np.max(np.abs(templates[old_idx - 1])))
+                    )
+                else:
+                    stats.unit_peak_channels.append(-1)
+                    stats.unit_template_amplitudes.append(0.0)
+
+        # Spike counts per unit from final (remapped) labels
+        from collections import Counter
+        label_counts = Counter(int(lbl) for lbl in labels if lbl > 0)
+        stats.unit_spike_counts = [
+            label_counts.get(uid, 0) for uid in range(1, num_units + 1)
+        ]
 
     if return_extra_output:
         extra_output = SortingSchemeExtraOutput(
@@ -174,9 +235,9 @@ def remove_duplicate_times(times: npt.NDArray, labels: npt.NDArray):
     labels2 = labels[inds]
     return times2, labels2
 
-def align_templates(templates: npt.NDArray[np.float32]):
+def align_templates(templates: npt.NDArray[np.float32], clamp_avg_offset: bool = False):
     K = templates.shape[0]
-    # T = templates.shape[1]
+    T = templates.shape[1]
     # M = templates.shape[2]
     offsets = np.zeros((K,), dtype=np.int32)
     pairwise_optimal_offsets = np.zeros((K, K), dtype=np.int32)
@@ -186,6 +247,7 @@ def align_templates(templates: npt.NDArray[np.float32]):
             offset, inner_product = compute_pairwise_optimal_offset(templates[k1], templates[k2])
             pairwise_optimal_offsets[k1, k2] = offset
             pairwise_inner_products[k1, k2] = inner_product
+    n_iterations = 0
     for passnum in range(20):
         something_changed = False
         for k1 in range(K):
@@ -199,14 +261,17 @@ def align_templates(templates: npt.NDArray[np.float32]):
                     total_weight += weight
             if total_weight > 0:
                 avg_offset = int(weighted_sum / total_weight)
+                if clamp_avg_offset:
+                    avg_offset = max(-T, min(T, avg_offset))
             else:
                 avg_offset = 0
             if avg_offset != offsets[k1]:
                 something_changed = True
                 offsets[k1] = avg_offset
+        n_iterations += 1
         if not something_changed:
             break
-    return offsets
+    return offsets, n_iterations
 
 
 def compute_pairwise_optimal_offset(template1: npt.NDArray[np.float32], template2: npt.NDArray[np.float32]):
