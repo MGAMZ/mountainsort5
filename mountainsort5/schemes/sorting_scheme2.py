@@ -231,7 +231,6 @@ def sorting_scheme2(
             detect_sign=sorting_parameters.detect_sign,
             margin_left=sorting_parameters.snippet_T1,
             margin_right=sorting_parameters.snippet_T2,
-            verbose=False
         )
         logger.debug(f'Scheme 2 detected {len(times_chunk)} spikes in chunk {i + 1} of {len(chunks)}')
         _p2_detected += len(times_chunk)

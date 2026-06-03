@@ -12,7 +12,6 @@ def detect_spikes(
     detect_sign: int,
     margin_left: int,
     margin_right: int,
-    verbose: bool
 ) -> Tuple[npt.NDArray, npt.NDArray]:
     N = traces.shape[0]
     M = traces.shape[1]
@@ -45,8 +44,6 @@ def detect_spikes(
     channel_indices = []
     for m in range(M):
         nbhd = adjacency[m]
-        if verbose:
-            print(f'm = {m} (nbhd size: {len(nbhd)})')
         indices = [0 for j in range(len(nbhd))]
         for i in range(len(candidate_times[m])):
             t = candidate_times[m][i]

@@ -75,7 +75,6 @@ def sorting_scheme1(
         detect_sign=sorting_parameters.detect_sign,
         margin_left=sorting_parameters.snippet_T1,
         margin_right=sorting_parameters.snippet_T2,
-        verbose=True
     )
     logger.debug(f'Detected {len(times)} spikes')
 
@@ -84,6 +83,7 @@ def sorting_scheme1(
 
     # this is important because isosplit does not do well with duplicate points
     times, channel_indices = remove_duplicate_times(times, channel_indices)
+    logger.debug(f'After removing duplicate times, {len(times)} spikes remain.')
 
     if stats is not None:
         stats.num_spikes_after_dedup = len(times)
@@ -100,9 +100,11 @@ def sorting_scheme1(
     L = snippets.shape[0]
     T = snippets.shape[1]
     assert snippets.shape[2] == M
+    logger.debug(f'Extracted snippets with shape {snippets.shape}')
 
     npca = sorting_parameters.npca_per_channel * M
     features = compute_pca_features(snippets.reshape((L, T * M)), npca=npca)
+    logger.debug(f'Computed PCA features with shape {features.shape}')
     labels = isosplit6_subdivision_method(
         X=features,
         npca_per_subdivision=sorting_parameters.npca_per_subdivision
@@ -111,12 +113,14 @@ def sorting_scheme1(
         K = int(np.max(labels))
     else:
         K = 0
+    logger.debug(f'`isosplit6_subdivision_method` resulted in {K} clusters')
 
     if stats is not None:
         stats.num_clusters_before_alignment = K
 
     templates = compute_templates(snippets=snippets, labels=labels) # K x T x M
     peak_channel_indices = [int(np.argmin(np.min(templates[i], axis=0))) for i in range(K)]
+    logger.debug(f'Computed templates and peak channel indices: {peak_channel_indices}')
 
     if not sorting_parameters.skip_alignment:
         offsets, n_align_iter = align_templates(templates, clamp_avg_offset=sorting_parameters.clamp_avg_offset)
