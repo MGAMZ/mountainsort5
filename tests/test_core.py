@@ -46,7 +46,6 @@ def test_detect_spikes():
         detect_sign=-1,
         margin_left=10,
         margin_right=10,
-        verbose=False
     )
     assert len(times) == len(channel_indices) == 2
     assert times[0] == 31
