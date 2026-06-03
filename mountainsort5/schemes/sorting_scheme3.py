@@ -11,6 +11,8 @@ from ..core.get_block_recording_for_scheme3 import get_block_recording_for_schem
 from ..core.SnippetClassifier import SnippetClassifier
 from ..core.get_times_labels_from_sorting import get_times_labels_from_sorting
 
+from tiansuo.logger import logger
+
 
 def sorting_scheme3(
     recording: si.BaseRecording, *,
@@ -26,6 +28,7 @@ def sorting_scheme3(
     Returns:
         si.BaseSorting: SpikeInterface sorting object
     """
+    logger.debug(f'Entering ms5 sorting scheme 3.')
 
     ###################################################################
     # Handle multi-segment recordings
@@ -44,6 +47,7 @@ def sorting_scheme3(
     channel_locations = recording.get_channel_locations()
 
     sorting_parameters.check_valid(M=M, N=N, sampling_frequency=sampling_frequency, channel_locations=channel_locations)
+    logger.debug(f"ms5 checked sorting parameters.")
 
     block_size = int(sorting_parameters.block_duration_sec * sampling_frequency) # size of chunks in samples
     blocks = get_time_chunks(np.int64(recording.get_num_samples()), chunk_size=np.int32(block_size), padding=np.int32(1000))

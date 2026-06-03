@@ -39,6 +39,7 @@ def sorting_scheme1(
     Returns:
         si.BaseSorting: SpikeInterface sorting object
     """
+    logger.debug(f'Entering ms5 sorting scheme 1.')
 
     ###################################################################
     # Handle multi-segment recordings
@@ -62,8 +63,10 @@ def sorting_scheme1(
     channel_locations = recording.get_channel_locations()
 
     sorting_parameters.check_valid(M=M, N=N, sampling_frequency=sampling_frequency, channel_locations=channel_locations)
+    logger.debug(f"ms5 checked sorting parameters.")
 
     traces: np.ndarray = recording.get_traces()
+    logger.debug(f"Got traces with shape {traces.shape} and dtype {traces.dtype}")
 
     time_radius = int(math.ceil(sorting_parameters.detect_time_radius_msec / 1000 * sampling_frequency))
     times, channel_indices = detect_spikes(
@@ -76,14 +79,14 @@ def sorting_scheme1(
         margin_left=sorting_parameters.snippet_T1,
         margin_right=sorting_parameters.snippet_T2,
     )
-    logger.debug(f'Detected {len(times)} spikes')
+    logger.debug(f"Detected {len(times)} spikes")
 
     if stats is not None:
         stats.num_spikes_detected = len(times)
 
     # this is important because isosplit does not do well with duplicate points
     times, channel_indices = remove_duplicate_times(times, channel_indices)
-    logger.debug(f'After removing duplicate times, {len(times)} spikes remain.')
+    logger.debug(f"After removing duplicate times, {len(times)} spikes remain.")
 
     if stats is not None:
         stats.num_spikes_after_dedup = len(times)

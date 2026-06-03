@@ -41,6 +41,7 @@ def sorting_scheme2(
             or, if return_snippet_classifiers is True:
         si.BaseSorting, snippet_classifiers
     """
+    logger.debug(f'Entering ms5 sorting scheme 2.')
 
     ###################################################################
     # Handle multi-segment recordings
@@ -71,6 +72,7 @@ def sorting_scheme2(
 
     # check that the sorting parameters are valid
     sorting_parameters.check_valid(M=M, N=N, sampling_frequency=sampling_frequency, channel_locations=channel_locations)
+    logger.debug(f"ms5 checked sorting parameters.")
 
     # Subsample the recording for training
     if sorting_parameters.training_duration_sec is not None:
